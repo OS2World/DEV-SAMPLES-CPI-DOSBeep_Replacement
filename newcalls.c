@@ -1,5 +1,5 @@
 #define INCL_PM
-#define INCL_DOS
+#define INCL_BASE
 #include <os2.h>
 #include <string.h>
 #include <stdio.h>
@@ -7,12 +7,17 @@
 #include <math.h>
 #include <limits.h>
 #include <builtin.h>
-#include <malloc.h>
 
 #define INCL_OS2MM
 #include <os2me.h>
 
 #define M_PI    3.14159265358979323846
+
+typedef ULONG (APIENTRY FN_SPIGETHANDLER)(PSZ,HID*,HID*);
+typedef FN_SPIGETHANDLER *PFN_SPIGETHANDLER;
+
+typedef ULONG (APIENTRY FN_SPIGETPROTOCOL)(HID,PSPCBKEY,PSPCB);
+typedef FN_SPIGETPROTOCOL *PFN_SPIGETPROTOCOL;
 
 typedef ULONG (APIENTRY FN_MCISENDCOMMAND)(USHORT,USHORT,ULONG,PVOID,USHORT);
 typedef FN_MCISENDCOMMAND *PFN_MCISENDCOMMAND;
@@ -30,8 +35,22 @@ typedef struct _PLAYLISTCMD
 PLAYLISTCMD, *PPLAYLISTCMD;
 
 APIRET APIENTRY OrigDosBeep(ULONG freq,ULONG dur);
-APIRET16 APIENTRY16 OrigDos16Beep(ULONG freq,ULONG dur);
+APIRET16 APIENTRY16 OrigDos16Beep(USHORT freq,USHORT dur);
 BOOL APIENTRY CommonBeep(ULONG freq,ULONG dur);
+
+HMODULE ghModMDM=NULLHANDLE;
+HMODULE ghModSSM=NULLHANDLE;
+#ifdef __cplusplus
+PCSZ
+#else
+PSZ
+#endif
+gpszMMBase=NULL;
+PFN_SPIGETHANDLER gSpiGetHandler=NULL;
+PFN_SPIGETPROTOCOL gSpiGetProtocol=NULL;
+PFN_MCISENDCOMMAND gmciSendCommand=NULL;
+PFN_MCIGETERRORSTRING gmciGetErrorString=NULL;
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,12 +62,6 @@ void __ctordtorTerm(void);
 #ifdef __cplusplus
 }
 #endif
-
-HMODULE ghModMDM=NULLHANDLE;
-PSZ gpszMMBase=NULL;
-PFN_MCISENDCOMMAND gmciSendCommand=NULL;
-PFN_MCIGETERRORSTRING gmciGetErrorString=NULL;
-
 
 ULONG APIENTRY _DLL_InitTerm(ULONG hMod,ULONG flag)
 {
@@ -81,6 +94,15 @@ ULONG APIENTRY _DLL_InitTerm(ULONG hMod,ULONG flag)
         {
             return 0;
         }
+
+        if (NO_ERROR != DosLoadModule(error,sizeof(error),"SSM",&ghModSSM))
+        {
+            DosFreeModule(ghModMDM);
+            return 0;
+        }
+        rc = DosQueryProcAddr(ghModSSM,3,NULL,(PFN *)&gSpiGetHandler);
+        rc = DosQueryProcAddr(ghModSSM,14,NULL,(PFN *)&gSpiGetProtocol);
+
         rc = DosQueryProcAddr(ghModMDM,1,NULL,(PFN *)&gmciSendCommand);
         rc = DosQueryProcAddr(ghModMDM,3,NULL,(PFN *)&gmciGetErrorString);
 
@@ -88,6 +110,7 @@ ULONG APIENTRY _DLL_InitTerm(ULONG hMod,ULONG flag)
    }
    else if (flag == 1)
    {
+       rc = DosFreeModule(ghModSSM);
        rc = DosFreeModule(ghModMDM);
 
 #ifdef __cplusplus
@@ -188,10 +211,10 @@ BOOL APIENTRY CommonBeep(ULONG freq,ULONG dur)
 
         /*
          * query stream manager parameters for the given wave format:
-         * 44100 kHz, 2 channels, 16-bit
+         * 44100 Hz, 2 channels, 16-bit
          */
-        SpiGetHandler("AUDIOSH$",&hidUnused,&hidTarget);
-        SpiGetProtocol(hidTarget,&key,&spcb);
+        gSpiGetHandler("AUDIOSH$",&hidUnused,&hidTarget);
+        gSpiGetProtocol(hidTarget,&key,&spcb);
 
         /*
          * these are the frequency boundaries defined by the original
@@ -221,7 +244,7 @@ BOOL APIENTRY CommonBeep(ULONG freq,ULONG dur)
         ulNumSamples    = max(ulNumSamples,ulMinNumSamples);
         ulNumBytes      = ulNumSamples*4;
 
-        pBuffer = malloc(ulNumBytes);
+        pBuffer = (PSHORT)malloc(ulNumBytes);
         if (!pBuffer)
         {
             strcpy(errorBuffer,"Could not allocate memory for sample creation.");
@@ -231,7 +254,7 @@ BOOL APIENTRY CommonBeep(ULONG freq,ULONG dur)
 
         /*
          * create a sine wave with the given freq for the given (potentially limited) dur
-         * create a 16-bit, 2 channel PCM stream
+         * create a 44100 Hz, 2 channels, 16-bit PCM stream
          */
         for (i=0;i<ulNumSamples;i++)
         {
